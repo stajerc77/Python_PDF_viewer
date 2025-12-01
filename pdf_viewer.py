@@ -5,11 +5,12 @@ import fitz  # PyMuPDF
 from llama_cpp import Llama
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QFileDialog, QPushButton, QScrollArea, QLabel, QMessageBox, QTextEdit
+    QFileDialog, QPushButton, QScrollArea, QLabel, QMessageBox, QTextEdit,
+    QTreeWidget, QTreeWidgetItem
 )
-from PySide6.QtGui import QImage, QPixmap, QPainter, QColor
+from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QBrush
 from PySide6.QtCore import Qt, QThread, Signal
-from ner_extractor_v2 import extract_entities
+from ner_extractor import extract_entities
 from text_summarizer import build_summarizer
 
 
@@ -301,10 +302,21 @@ class MainWindow(QMainWindow):
 
         # viewer in scroll area
         self.viewer = PDFViewer(zoom=1.5)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(self.viewer)
-        container_layout.addWidget(scroll)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setWidget(self.viewer)
+        # viewer + entity Sidebar horizontal layout
+        viewer_row = QHBoxLayout()
+        # left side: the scroll area with PDF pages
+        viewer_row.addWidget(self.scroll, stretch=4)
+        # right side: entity sidebar
+        self.entity_list = QTreeWidget()
+        self.entity_list.setHeaderLabels(["Entities"])
+        self.entity_list.setMinimumWidth(260)
+        viewer_row.addWidget(self.entity_list, stretch=1)
+        
+        self.entity_list.itemClicked.connect(self.on_entity_clicked)
+        container_layout.addLayout(viewer_row)
 
         # summary area (hidden until used)
         self.summary_box = QTextEdit()
@@ -317,6 +329,37 @@ class MainWindow(QMainWindow):
         # threads references
         self.ner_worker = None
         self.summary_worker = None
+    
+
+    def on_entity_clicked(self, item, column):
+        data = item.data(0, Qt.UserRole)
+        if not data:
+            return
+        page, bbox = data
+        
+        # scroll the viewer to the page widget
+        # each page widget is a QLabel added to self.viewer.vlayout in load_pdf()
+        try:
+            widget_index = page  # page is zero-based index matching layout order
+            # vlayout contains widgets + final stretch; widget at index widget_index is the page label
+            widget_item = self.viewer.vlayout.itemAt(widget_index)
+            if widget_item is None:
+                return
+            widget = widget_item.widget()
+            if widget is None:
+                return
+            # ensure the page widget is visible in the scroll area
+            self.scroll.ensureWidgetVisible(widget)
+        except Exception:
+            # fallback - do nothing if scrolling fails
+            pass
+
+        # optionally flash the highlight if viewer supports it
+        if hasattr(self.viewer, "flash_highlight"):
+            try:
+                self.viewer.flash_highlight(page, bbox)
+            except Exception:
+                pass
 
     def open_pdf(self):
         path, _ = QFileDialog.getOpenFileName(self, "Open PDF file", "", "PDF Files (*.pdf)")
@@ -354,7 +397,39 @@ class MainWindow(QMainWindow):
             return
         # result: {pno: [ {entity,label,box}, ... ], ... }
         self.viewer.apply_highlights(result, write_annotations=save)
-        total = sum(len(v) for v in result.values())
+
+        # populate sidebar
+        self.entity_list.clear()  # reset previous
+
+        # build a dict: {label: set of entities}
+        entity_dict = {}
+        for page_items in result.values():
+            for item in page_items:
+                label = item.get("label", "unknown")
+                entity_text = item.get("entity", "")
+                if label not in entity_dict:
+                    entity_dict[label] = set()
+                entity_dict[label].add(entity_text)
+        
+        # add top-level items per label
+        for label, entities in entity_dict.items():
+            top_item = QTreeWidgetItem([label])
+            for entity in sorted(entities):
+                child_item = QTreeWidgetItem([entity])
+                # store the first page + bbox of that entity for navigation
+                for page_no, page_items in result.items():
+                    for page_item in page_items:
+                        if page_item.get("entity") == entity:
+                            child_item.setData(0, Qt.UserRole, (page_no, page_item.get("box")))
+                            break
+                    else:
+                        continue
+                    break
+                top_item.addChild(child_item)
+            self.entity_list.addTopLevelItem(top_item)
+            top_item.setExpanded(False)  # collapsed by default
+
+        total = sum(len(value) for value in result.values())
         QMessageBox.information(self, "NER finished", f"Found {total} entity occurrences across {len(result)} pages.")
 
     def do_summary(self):
