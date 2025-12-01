@@ -322,6 +322,13 @@ class MainWindow(QMainWindow):
         self.summary_box = QTextEdit()
         self.summary_box.setReadOnly(True)
         self.summary_box.hide()
+
+        # toggle button
+        self.btn_toggle_summary = QPushButton("Show Summary")
+        self.btn_toggle_summary.setCheckable(True)
+        self.btn_toggle_summary.toggled.connect(self.toggle_summary)
+        toolbar.addWidget(self.btn_toggle_summary)
+
         container_layout.addWidget(self.summary_box)
 
         self.setCentralWidget(container)
@@ -329,6 +336,15 @@ class MainWindow(QMainWindow):
         # threads references
         self.ner_worker = None
         self.summary_worker = None
+    
+
+    def toggle_summary(self, checked):
+        if checked:
+            self.summary_box.show()
+            self.btn_toggle_summary.setText("Hide Summary")
+        else:
+            self.summary_box.hide()
+            self.btn_toggle_summary.setText("Show Summary")
     
 
     def on_entity_clicked(self, item, column):
